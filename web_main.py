@@ -157,11 +157,11 @@ def start_ws(
     return ws
 
 
-def start_price_poller(engine: TradingEngine, client: BinanceClient, events_q: queue.Queue | None = None):
-    """轮询最新价格作为 WebSocket 的回退方案，保证页面与策略实时性。
+    def start_price_poller(engine: TradingEngine, client: BinanceClient, events_q: queue.Queue | None = None):
+      """轮询最新价格作为 WebSocket 的回退方案，保证页面与策略实时性。
 
-    每 2 秒获取一次价格，并更新引擎的当前价与未收盘K线价格。
-    """
+      每 2 秒获取一次价格，并更新引擎的当前价与未收盘K线价格。
+      """
     stop_flag = threading.Event()
 
     def run():
@@ -191,6 +191,8 @@ def start_price_poller(engine: TradingEngine, client: BinanceClient, events_q: q
                         s["recent_klines"] = engine.recent_klines(5)
                         s["server_time"] = int(time.time() * 1000)
                         s["sysinfo"] = get_sysinfo()
+                        # 修复：轮询事件也附带 totals，避免页面在“-”与数值之间来回切换
+                        s["totals"] = engine.totals()
                         events_q.put_nowait(s)
                     except Exception:
                         pass
@@ -214,6 +216,8 @@ def create_app(engine: TradingEngine, port: int, tz_offset: int, events_q: queue
         s["server_time"] = int(time.time() * 1000) + tz_offset * 3600 * 1000
         s["sysinfo"] = get_sysinfo()
         s["config"] = get_config_summary(engine, tz_offset, enable_poller)
+        # 修复：首次加载也返回 totals，避免首屏显示“-”随后切换为数值造成闪烁
+        s["totals"] = engine.totals()
         return jsonify(s)
 
     @app.route("/")
@@ -298,9 +302,9 @@ def create_app(engine: TradingEngine, port: int, tz_offset: int, events_q: queue
               const fmtBool = (b) => (b ? '开' : '关');
               document.getElementById('cfg').innerHTML = `
                 <p>
-                  交易类型: <code>${t.test_mode?'模拟':'真实'}</code> · 保证金余额:<code>${t.initial_balance}</code> · 开仓比例:<code>${(Number(t.percent)*100).toFixed(0)}%</code> · 杠杆:<code>${t.leverage}x</code> · 手续费率:<code>${(Number(t.fee_rate)*100).toFixed(3)}%</code> · 交易币对:<code>${t.symbol}</code> · K线周期:<code>${t.interval}</code>
-                  ｜ 指标: EMA<code>${i.ema_period}</code> · MA<code>${i.ma_period}</code> · K线收盘后交易:<code>${fmtBool(i.use_closed_only)}</code> · EMA/MA斜率约束:<code>${fmtBool(i.use_slope)}</code> · 价格轮询:<code>${fmtBool(w.enable_price_poller)}</code>
-                  ｜ 当前显示时区:+<code>${w.timezone_offset_hours||0}h</code>
+                  交易类型: <code>${t.test_mode?'模拟':'真实'}</code> · 保证金余额:<code>${t.initial_balance}</code> · 开仓比例:<code>${(Number(t.percent)*100).toFixed(0)}%</code> · 杠杆:<code>${t.leverage}x</code> · 手续费率:<code>${(Number(t.fee_rate)*100).toFixed(3)}%</code> · 交易币对:<code>${t.symbol}</code> · ｜ K线周期:<code>${t.interval}</code>
+                  指标: EMA<code>${i.ema_period}</code> · MA<code>${i.ma_period}</code> · K线收盘后交易:<code>${fmtBool(i.use_closed_only)}</code> · EMA/MA斜率约束:<code>${fmtBool(i.use_slope)}</code> · 价格轮询:<code>${fmtBool(w.enable_price_poller)}</code>
+                  当前显示时区:UTC +<code>${w.timezone_offset_hours||0}H</code>
                 </p>
               `;
             }
@@ -316,9 +320,10 @@ def create_app(engine: TradingEngine, port: int, tz_offset: int, events_q: queue
             const totals = s.totals || {};
             const tp = (totals.total_pnl !== undefined && totals.total_pnl !== null) ? Number(totals.total_pnl).toFixed(2) : '-';
             const tf = (totals.total_fee !== undefined && totals.total_fee !== null) ? Number(totals.total_fee).toFixed(2) : '-';
+            const tc = (totals.trade_count !== undefined && totals.trade_count !== null) ? Number(totals.trade_count) : '-';
             const roiPct = (totals.roi !== undefined && totals.roi !== null) ? (Number(totals.roi) * 100).toFixed(2) + '%' : '-';
             document.getElementById('position').innerHTML = `
-              <p>总盈亏: <b>${tp}</b> · 总利润率: <b>${roiPct}</b> · 总手续费: <b>${tf}</b></p>
+              <p>总盈亏: <b>${tp}</b> · 总利润率: <b>${roiPct}</b> · 总手续费: <b>${tf}</b> · 交易次数: <b>${tc}</b></p>
               <p>方向: <b>${side}</b> · 开仓价: ${entry} · 数量: ${qty} · 当前价值: ${val}</p>
             `;
             const tb = document.querySelector('#trades tbody');

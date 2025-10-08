@@ -65,6 +65,10 @@ class TradingEngine:
         self._db = sqlite3.connect(self.db_path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._init_db()
+        # 初始化余额：从 wallet 表恢复最近余额；若数据库为空，则写入初始余额
+        # 这样在程序重启后，页面上的“实时余额”不会回到 initial_balance，
+        # 而是延续上次运行的结果（例如 970），与累计的总盈亏保持一致。
+        self._restore_balance_from_wallet()
 
     # --------------------- DB ---------------------
     def _init_db(self):
@@ -107,6 +111,24 @@ class TradingEngine:
             """
         )
         self._db.commit()
+
+    def _restore_balance_from_wallet(self):
+        """在程序启动时恢复余额：
+        - 若 wallet 表存在记录，则将引擎余额设为最近一条记录的余额；
+        - 若不存在记录，则将当前余额（initial_balance）写入 wallet，作为基准起点。
+        """
+        try:
+            cur = self._db.cursor()
+            cur.execute("SELECT balance FROM wallet ORDER BY id DESC LIMIT 1")
+            row = cur.fetchone()
+            if row and row[0] is not None:
+                self.balance = float(row[0])
+            else:
+                # 数据库首次初始化：记录初始余额，便于后续累计统计
+                self._insert_wallet()
+        except Exception:
+            # 出现异常时不影响程序继续运行；保留当前内存余额
+            pass
 
     def _insert_kline(self, k: dict):
         cur = self._db.cursor()
@@ -155,6 +177,7 @@ class TradingEngine:
         定义：
         - 总盈亏：自程序初始化数据库以来，所有平仓记录（side='CLOSE'）的净盈亏之和（trades.pnl）。
         - 总手续费：自程序初始化数据库以来，所有开/平仓记录的手续费之和（trades.fee）。
+        - 交易次数：自程序初始化数据库以来，所有平仓记录的次数（每次平仓计 1 次）。
         - 总利润率：总盈亏除以基准资金，其中基准资金取 wallet 表的第一条记录；若不存在，则取配置的 initial_balance。
         """
         cur = self._db.cursor()
@@ -166,6 +189,10 @@ class TradingEngine:
         cur.execute("SELECT COALESCE(SUM(fee), 0.0) FROM trades")
         total_fee = float(cur.fetchone()[0] or 0.0)
 
+        # 交易次数：平仓记录计数
+        cur.execute("SELECT COUNT(1) FROM trades WHERE side = 'CLOSE'")
+        trade_count = int(cur.fetchone()[0] or 0)
+
         # 基准资金：wallet 首条记录，否则使用 initial_balance
         cur.execute("SELECT balance FROM wallet ORDER BY id ASC LIMIT 1")
         row = cur.fetchone()
@@ -175,6 +202,7 @@ class TradingEngine:
         return {
             "total_pnl": round(total_pnl, 6),
             "total_fee": round(total_fee, 6),
+            "trade_count": trade_count,
             "roi": roi,
             "base_balance": base_balance,
         }
