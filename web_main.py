@@ -127,6 +127,8 @@ def start_ws(
                 s["server_time"] = int(time.time() * 1000)
                 # 附带系统信息（CPU/MEM/DISK）
                 s["sysinfo"] = get_sysinfo()
+                # 汇总总盈亏/总手续费/总利润率
+                s["totals"] = engine.totals()
                 events_q.put_nowait(s)
             except Exception:
                 pass
@@ -252,7 +254,7 @@ def create_app(engine: TradingEngine, port: int, tz_offset: int, events_q: queue
               <div id="status"></div>
             </div>
             <div class="card">
-              <h2>当前持仓</h2>
+              <h2>当前持仓及总盈亏</h2>
               <div id="position"></div>
             </div>
             <div class="card">
@@ -285,7 +287,7 @@ def create_app(engine: TradingEngine, port: int, tz_offset: int, events_q: queue
             const memLeft = fmtBytes(sys.mem_available_bytes);
             const diskLeft = fmtBytes(sys.disk_free_bytes);
             document.getElementById('meta').innerHTML = `
-              <p>服务器时间: <code>${new Date(s.server_time).toLocaleString()}</code> · 系统: CPU <code>${fmtPct(sys.cpu_percent)}</code> · MEM <code>${fmtPct(sys.mem_percent)}</code> 剩余:<code>${memLeft}</code> · DISK <code>${fmtPct(sys.disk_percent)}</code> 剩余:<code>${diskLeft}</code></p>
+              <p>服务器时间: <code>${new Date(s.server_time).toLocaleString()}</code> · CPU <code>${fmtPct(sys.cpu_percent)}</code> · MEM <code>${fmtPct(sys.mem_percent)}</code> 余:<code>${memLeft}</code> · DISK <code>${fmtPct(sys.disk_percent)}</code> 余:<code>${diskLeft}</code></p>
             `;
             // 配置汇总（不展示 API 密钥），以单行在“系统参数配置”卡片中显示。
             if (s.config) {
@@ -296,9 +298,9 @@ def create_app(engine: TradingEngine, port: int, tz_offset: int, events_q: queue
               const fmtBool = (b) => (b ? '开' : '关');
               document.getElementById('cfg').innerHTML = `
                 <p>
-                  交易: <code>${t.test_mode?'模拟':'真实'}</code> · 初始资金 <code>${t.initial_balance}</code> · 开仓比例 <code>${(Number(t.percent)*100).toFixed(0)}%</code> · 杠杆 <code>${t.leverage}x</code> · 手续费率 <code>${(Number(t.fee_rate)*100).toFixed(3)}%</code> · 交易对 <code>${t.symbol}</code> · 周期 <code>${t.interval}</code>
-                  ｜ 指标: EMA <code>${i.ema_period}</code> · MA <code>${i.ma_period}</code> · 仅收盘K线 <code>${fmtBool(i.use_closed_only)}</code> · 斜率约束 <code>${fmtBool(i.use_slope)}</code> · 价格轮询 <code>${fmtBool(w.enable_price_poller)}</code>
-                  ｜ Web: 时区偏移 <code>${w.timezone_offset_hours||0}h</code>
+                  交易类型: <code>${t.test_mode?'模拟':'真实'}</code> · 保证金余额:<code>${t.initial_balance}</code> · 开仓比例:<code>${(Number(t.percent)*100).toFixed(0)}%</code> · 杠杆:<code>${t.leverage}x</code> · 手续费率:<code>${(Number(t.fee_rate)*100).toFixed(3)}%</code> · 交易币对:<code>${t.symbol}</code> · K线周期:<code>${t.interval}</code>
+                  ｜ 指标: EMA<code>${i.ema_period}</code> · MA<code>${i.ma_period}</code> · 仅K线收盘后交易:<code>${fmtBool(i.use_closed_only)}</code> · EMA/MA斜率约束:<code>${fmtBool(i.use_slope)}</code> · 价格轮询:<code>${fmtBool(w.enable_price_poller)}</code>
+                  ｜ 当前显示时区:+<code>${w.timezone_offset_hours||0}h</code>
                 </p>
               `;
             }
@@ -311,7 +313,12 @@ def create_app(engine: TradingEngine, port: int, tz_offset: int, events_q: queue
             const entry = pos.entry_price ? pos.entry_price.toFixed(1) : '-';
             const qty = pos.qty ? pos.qty.toFixed(4) : '-';
             const val = pos.value ? pos.value.toFixed(2) : '-';
+            const totals = s.totals || {};
+            const tp = (totals.total_pnl !== undefined && totals.total_pnl !== null) ? Number(totals.total_pnl).toFixed(2) : '-';
+            const tf = (totals.total_fee !== undefined && totals.total_fee !== null) ? Number(totals.total_fee).toFixed(2) : '-';
+            const roiPct = (totals.roi !== undefined && totals.roi !== null) ? (Number(totals.roi) * 100).toFixed(2) + '%' : '-';
             document.getElementById('position').innerHTML = `
+              <p>总盈亏: <b>${tp}</b> · 总利润率: <b>${roiPct}</b> · 总手续费: <b>${tf}</b></p>
               <p>方向: <b>${side}</b> · 开仓价: ${entry} · 数量: ${qty} · 当前价值: ${val}</p>
             `;
             const tb = document.querySelector('#trades tbody');

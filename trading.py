@@ -148,6 +148,37 @@ class TradingEngine:
         )
         self._db.commit()
 
+    # --------------------- Aggregates ---------------------
+    def totals(self) -> dict:
+        """统计总盈亏、总手续费与总利润率。
+
+        定义：
+        - 总盈亏：自程序初始化数据库以来，所有平仓记录（side='CLOSE'）的净盈亏之和（trades.pnl）。
+        - 总手续费：自程序初始化数据库以来，所有开/平仓记录的手续费之和（trades.fee）。
+        - 总利润率：总盈亏除以基准资金，其中基准资金取 wallet 表的第一条记录；若不存在，则取配置的 initial_balance。
+        """
+        cur = self._db.cursor()
+        # 平仓净盈亏总和（不含开仓的负手续费记录）
+        cur.execute("SELECT COALESCE(SUM(pnl), 0.0) FROM trades WHERE side = 'CLOSE'")
+        total_pnl = float(cur.fetchone()[0] or 0.0)
+
+        # 开/平仓手续费总和
+        cur.execute("SELECT COALESCE(SUM(fee), 0.0) FROM trades")
+        total_fee = float(cur.fetchone()[0] or 0.0)
+
+        # 基准资金：wallet 首条记录，否则使用 initial_balance
+        cur.execute("SELECT balance FROM wallet ORDER BY id ASC LIMIT 1")
+        row = cur.fetchone()
+        base_balance = float(row[0]) if row and row[0] is not None else float(self.initial_balance)
+
+        roi = (total_pnl / base_balance) if base_balance > 0 else 0.0
+        return {
+            "total_pnl": round(total_pnl, 6),
+            "total_fee": round(total_fee, 6),
+            "roi": roi,
+            "base_balance": base_balance,
+        }
+
     # --------------------- Data & Indicators ---------------------
     def _recalc_indicators(self):
         self.ema_list = ema(self.closes, self.ema_period)
