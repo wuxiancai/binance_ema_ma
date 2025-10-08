@@ -14,10 +14,12 @@
   },
   "indicators": {
     "ema_period": 5,
-    "ma_period": 15
+    "ma_period": 15,
+    "use_closed_only": true
   },
   "web": {
     "port": 5001,
-    "timezone_offset_hours": 8
+    "timezone_offset_hours": 8,
+    "enable_price_poller": false 
   }
 }

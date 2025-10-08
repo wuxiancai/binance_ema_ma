@@ -27,7 +27,35 @@ def load_config() -> dict:
         return json.load(f)
 
 
-def start_ws(engine: TradingEngine, symbol: str, interval: str, events_q: queue.Queue | None = None):
+def start_ws(
+    engine: TradingEngine,
+    symbol: str,
+    interval: str,
+    events_q: queue.Queue | None = None,
+    *,
+    client: BinanceClient,
+    enable_fallback_poller: bool = True,
+):
+    """启动 Binance WS，并在 WS 异常/关闭时自动启用价格轮询作为回退。
+
+    - enable_fallback_poller: True 时，WS 不稳定会自动启用轮询；WS 恢复后关闭轮询
+    """
+
+    poller_stop = {"fn": None}
+
+    def start_poller_once():
+        if poller_stop["fn"] is None and enable_fallback_poller:
+            print("[Fallback] start price poller due to WS issue")
+            poller_stop["fn"] = start_price_poller(engine=engine, client=client, events_q=events_q)
+
+    def stop_poller_if_running():
+        if poller_stop["fn"] is not None:
+            try:
+                poller_stop["fn"]()
+            except Exception:
+                pass
+            poller_stop["fn"] = None
+
     def on_kline(k: dict):
         engine.on_realtime_kline(k)
         # 推送最新状态到前端（与 Binance WS 同步节奏）
@@ -40,7 +68,27 @@ def start_ws(engine: TradingEngine, symbol: str, interval: str, events_q: queue.
                 events_q.put_nowait(s)
             except Exception:
                 pass
-    ws = BinanceWebSocket(symbol, interval, on_kline=on_kline)
+
+    def on_open():
+        # WS 恢复，关闭回退轮询
+        stop_poller_if_running()
+
+    def on_error(_err):
+        # WS 异常，启动回退轮询
+        start_poller_once()
+
+    def on_close():
+        # WS 关闭，启动回退轮询
+        start_poller_once()
+
+    ws = BinanceWebSocket(
+        symbol,
+        interval,
+        on_kline=on_kline,
+        on_open_cb=on_open,
+        on_error_cb=on_error,
+        on_close_cb=on_close,
+    )
     ws.start()
     return ws
 
@@ -229,9 +277,16 @@ def main():
 
     # 事件队列供前端 SSE 使用
     events_q: queue.Queue = queue.Queue(maxsize=1000)
-    # 启动 WS；是否启用价格轮询由配置控制（默认关闭）
-    ws = start_ws(engine, engine.symbol, engine.interval, events_q=events_q)
     enable_poller = bool(wcfg.get("enable_price_poller", False))
+    # 启动 WS；当未开启价格轮询时，WS 出问题会自动启用轮询作回退
+    ws = start_ws(
+        engine,
+        engine.symbol,
+        engine.interval,
+        events_q=events_q,
+        client=client,
+        enable_fallback_poller=not enable_poller,
+    )
     if enable_poller:
         start_price_poller(engine, client, events_q=events_q)
 

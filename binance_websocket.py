@@ -17,7 +17,8 @@ class BinanceWebSocket:
     """简单的 WebSocket 封装：订阅 `{symbol}@kline_{interval}` 流。
 
     - on_kline: 回调函数，接收字典参数，包含 kline 关键字段
-    - auto_reconnect: 断线自动重连
+    - on_open_cb/on_error_cb/on_close_cb: 连接状态回调，便于上层做降级或恢复
+    - auto_reconnect: 断线自动重连（指数退避）
     """
 
     def __init__(
@@ -25,16 +26,23 @@ class BinanceWebSocket:
         symbol: str,
         interval: str,
         on_kline: t.Callable[[dict], None],
+        on_open_cb: t.Optional[t.Callable[[], None]] = None,
+        on_error_cb: t.Optional[t.Callable[[t.Any], None]] = None,
+        on_close_cb: t.Optional[t.Callable[[], None]] = None,
         auto_reconnect: bool = True,
     ) -> None:
         self.symbol = symbol.upper()
         self.interval = interval
         self.on_kline = on_kline
+        self.on_open_cb = on_open_cb
+        self.on_error_cb = on_error_cb
+        self.on_close_cb = on_close_cb
         self.auto_reconnect = auto_reconnect
 
         self._ws: websocket.WebSocketApp | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._reconnect_delay = 2  # 秒，指数退避
 
     @property
     def url(self) -> str:
@@ -71,15 +79,34 @@ class BinanceWebSocket:
     def _on_error(self, _ws, error):
         # 简单打印错误，可进一步接入日志系统
         print("[WS] error:", error)
+        try:
+            if self.on_error_cb:
+                self.on_error_cb(error)
+        except Exception:
+            pass
 
     def _on_close(self, _ws, _a, _b):
         print("[WS] closed")
+        try:
+            if self.on_close_cb:
+                self.on_close_cb()
+        except Exception:
+            pass
         if self.auto_reconnect and not self._stop.is_set():
-            time.sleep(2)
+            time.sleep(self._reconnect_delay)
+            # 指数退避，封顶 60 秒
+            self._reconnect_delay = min(self._reconnect_delay * 2, 60)
             self._start()
 
     def _on_open(self, _ws):
         print("[WS] opened", self.url)
+        # 连接成功后重置退避
+        self._reconnect_delay = 2
+        try:
+            if self.on_open_cb:
+                self.on_open_cb()
+        except Exception:
+            pass
 
     def _start(self):
         self._ws = websocket.WebSocketApp(
@@ -89,7 +116,8 @@ class BinanceWebSocket:
             on_close=self._on_close,
             on_open=self._on_open,
         )
-        self._ws.run_forever(ping_interval=15, ping_timeout=10)
+        # 调整心跳参数，降低超时概率
+        self._ws.run_forever(ping_interval=10, ping_timeout=8)
 
     def start(self):
         if self._thread and self._thread.is_alive():
