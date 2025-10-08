@@ -60,6 +60,33 @@ def get_sysinfo() -> dict:
     except Exception:
         return {}
 
+def get_config_summary(engine: TradingEngine, tz_offset_hours: int, enable_poller: bool) -> dict:
+    """汇总需要在页面展示的配置参数（不含 API 密钥）。"""
+    try:
+        return {
+            "trading": {
+                "test_mode": engine.test_mode,
+                "initial_balance": engine.initial_balance,
+                "percent": engine.percent,
+                "leverage": engine.leverage,
+                "fee_rate": engine.fee_rate,
+                "symbol": engine.symbol,
+                "interval": engine.interval,
+            },
+            "indicators": {
+                "ema_period": engine.ema_period,
+                "ma_period": engine.ma_period,
+                "use_closed_only": engine.use_closed_only,
+                "use_slope": engine.use_slope,
+            },
+            "web": {
+                "timezone_offset_hours": tz_offset_hours,
+                "enable_price_poller": enable_poller,
+            },
+        }
+    except Exception:
+        return {}
+
 def start_ws(
     engine: TradingEngine,
     symbol: str,
@@ -174,7 +201,7 @@ def start_price_poller(engine: TradingEngine, client: BinanceClient, events_q: q
     return stop_flag
 
 
-def create_app(engine: TradingEngine, port: int, tz_offset: int, events_q: queue.Queue):
+def create_app(engine: TradingEngine, port: int, tz_offset: int, events_q: queue.Queue, *, enable_poller: bool):
     app = Flask(__name__)
 
     @app.route("/status")
@@ -184,6 +211,7 @@ def create_app(engine: TradingEngine, port: int, tz_offset: int, events_q: queue
         s["recent_klines"] = engine.recent_klines(5)
         s["server_time"] = int(time.time() * 1000) + tz_offset * 3600 * 1000
         s["sysinfo"] = get_sysinfo()
+        s["config"] = get_config_summary(engine, tz_offset, enable_poller)
         return jsonify(s)
 
     @app.route("/")
@@ -200,6 +228,7 @@ def create_app(engine: TradingEngine, port: int, tz_offset: int, events_q: queue
             body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 24px; }
             h1 { font-size: 20px; }
             .grid { display: grid; grid-template-columns: repeat(2, minmax(300px, 1fr)); gap: 16px; }
+            .grid1 { display: grid; grid-template-columns: 1fr; gap: 16px; }
             .card { border: 1px solid #ddd; border-radius: 8px; padding: 12px; }
             table { width: 100%; border-collapse: collapse; }
             th, td { border-bottom: 1px solid #eee; padding: 6px 8px; text-align: left; }
@@ -211,6 +240,12 @@ def create_app(engine: TradingEngine, port: int, tz_offset: int, events_q: queue
         <body>
           <h1>EMA/MA 自动交易系统 · __SYM__ · __INTERVAL__</h1>
           <div id="meta"></div>
+          <div class="grid1" style="margin:8px 0 16px 0">
+            <div class="card">
+              <h2>系统参数配置</h2>
+              <div id="cfg"></div>
+            </div>
+          </div>
           <div class="grid">
             <div class="card">
               <h2>实时价格及 EMA/MA</h2>
@@ -252,6 +287,21 @@ def create_app(engine: TradingEngine, port: int, tz_offset: int, events_q: queue
             document.getElementById('meta').innerHTML = `
               <p>服务器时间: <code>${new Date(s.server_time).toLocaleString()}</code> · 系统: CPU <code>${fmtPct(sys.cpu_percent)}</code> · MEM <code>${fmtPct(sys.mem_percent)}</code> 剩余:<code>${memLeft}</code> · DISK <code>${fmtPct(sys.disk_percent)}</code> 剩余:<code>${diskLeft}</code></p>
             `;
+            // 配置汇总（不展示 API 密钥），以单行在“系统参数配置”卡片中显示。
+            if (s.config) {
+              const cfg = s.config || {};
+              const t = cfg.trading || {};
+              const i = cfg.indicators || {};
+              const w = cfg.web || {};
+              const fmtBool = (b) => (b ? '开' : '关');
+              document.getElementById('cfg').innerHTML = `
+                <p>
+                  交易: <code>${t.test_mode?'模拟':'真实'}</code> · 初始资金 <code>${t.initial_balance}</code> · 开仓比例 <code>${(Number(t.percent)*100).toFixed(0)}%</code> · 杠杆 <code>${t.leverage}x</code> · 手续费率 <code>${(Number(t.fee_rate)*100).toFixed(3)}%</code> · 交易对 <code>${t.symbol}</code> · 周期 <code>${t.interval}</code>
+                  ｜ 指标: EMA <code>${i.ema_period}</code> · MA <code>${i.ma_period}</code> · 仅收盘K线 <code>${fmtBool(i.use_closed_only)}</code> · 斜率约束 <code>${fmtBool(i.use_slope)}</code> · 价格轮询 <code>${fmtBool(w.enable_price_poller)}</code>
+                  ｜ Web: 时区偏移 <code>${w.timezone_offset_hours||0}h</code>
+                </p>
+              `;
+            }
             document.getElementById('status').innerHTML = `
               <p>价格: <b>${price}</b> · EMA(5): <b>${ema}</b> · MA(15): <b>${ma}</b></p>
               <p>余额: <b>${bal}</b> / 初始: ${s.initial_balance} · 杠杆: ${s.leverage}x · 手续费率: ${(s.fee_rate*100).toFixed(3)}%</p>
@@ -356,7 +406,7 @@ def main():
     if enable_poller:
         start_price_poller(engine, client, events_q=events_q)
 
-    app = create_app(engine, port=wcfg.get("port", 5001), tz_offset=wcfg.get("timezone_offset_hours", 8), events_q=events_q)
+    app = create_app(engine, port=wcfg.get("port", 5001), tz_offset=wcfg.get("timezone_offset_hours", 8), events_q=events_q, enable_poller=enable_poller)
     port = int(wcfg.get("port", 5001))
     print(f"Preview URL: http://localhost:{port}/")
     # 生产建议使用 WSGI；此处使用 Flask 内建服务器即可
