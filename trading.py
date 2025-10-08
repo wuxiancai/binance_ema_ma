@@ -236,12 +236,25 @@ class TradingEngine:
                 print(f"[OPEN-CHECK] SHORT miss: price<{ema_curr:.2f}={price<ema_curr} ema<{ma_curr:.2f}={ema_curr<ma_curr} rising={ema_rising} slope_on={self.use_slope}")
         else:
             # 平仓逻辑
+            # 变更说明：
+            # 1) 将平仓条件简化为仅依赖交叉信号：
+            #    - LONG 仓位：仅在出现“死叉”时平仓；不再因为价格 < EMA 提前平仓。
+            #    - SHORT 仓位：仅在出现“金叉”时平仓；不再因为价格 > EMA 提前平仓。
+            # 2) 支持“同一根 K 线事件中平仓后立即反向开仓”：
+            #    - 若死叉导致平多仓，则在同次事件立即开空仓；
+            #    - 若金叉导致平空仓，则在同次事件立即开多仓；
+            #    - 该反向开仓不再额外检查价格相对均线或斜率条件，严格按交叉信号执行。
+            #    - 说明：use_closed_only=true 时，交叉仅在收盘触发；false 时，未收盘也可能触发，频次更高。
             if self.position.side == "LONG":
-                if cross.death_cross or price < ema_curr:
+                if cross.death_cross:
+                    # 死叉：平多，并在同事件反向开空
                     self._close_position(price)
+                    self._open_position("SHORT", price)
             elif self.position.side == "SHORT":
-                if cross.golden_cross or price > ema_curr:
+                if cross.golden_cross:
+                    # 金叉：平空，并在同事件反向开多
                     self._close_position(price)
+                    self._open_position("LONG", price)
 
         # 收盘时落库
         if bool(k.get("is_final", False)):
