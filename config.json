@@ -15,7 +15,7 @@
   "indicators": {
     "ema_period": 5,
     "ma_period": 15,
-    "use_closed_only": true
+    "use_closed_only": false
   },
   "web": {
     "port": 5001,
