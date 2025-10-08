@@ -250,7 +250,7 @@ def create_app(engine: TradingEngine, port: int, tz_offset: int, events_q: queue
           </div>
           <div class="grid">
             <div class="card">
-              <h2>实时价格及 EMA/MA</h2>
+              <h2>实时合约价格及 EMA/MA</h2>
               <div id="status"></div>
             </div>
             <div class="card">
@@ -306,7 +306,7 @@ def create_app(engine: TradingEngine, port: int, tz_offset: int, events_q: queue
             }
             document.getElementById('status').innerHTML = `
               <p>价格: <b>${price}</b> · EMA(5): <b>${ema}</b> · MA(15): <b>${ma}</b></p>
-              <p>余额: <b>${bal}</b> / 初始: ${s.initial_balance} · 杠杆: ${s.leverage}x · 手续费率: ${(s.fee_rate*100).toFixed(3)}%</p>
+              <p>实时余额: <b>${bal}</b> / 初始保证金: ${s.initial_balance} · 杠杆: ${s.leverage}x · 手续费率: ${(s.fee_rate*100).toFixed(3)}%</p>
             `;
             const pos = s.position || {};
             const side = pos.side || '-';
