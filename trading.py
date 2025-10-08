@@ -1,0 +1,322 @@
+"""交易引擎（模拟模式）
+
+负责：
+- 维护资金、仓位、手续费与盈亏
+- 接收历史与实时 K 线数据，计算指标并触发开/平仓
+- 将 K 线与交易记录写入 SQLite 数据库
+
+说明：
+- 为简洁起见，真实下单未实现；后续可在此模块扩展 API 签名与下单。
+"""
+from __future__ import annotations
+
+import os
+import sqlite3
+import time
+from dataclasses import dataclass
+from typing import Optional
+
+from indicators import ema, sma, crossover, is_rising
+
+
+@dataclass
+class Position:
+    side: Optional[str]  # "LONG" | "SHORT" | None
+    entry_price: float | None
+    qty: float | None
+
+
+class TradingEngine:
+    def __init__(self, config: dict) -> None:
+        tcfg = config.get("trading", {})
+        icfg = config.get("indicators", {})
+
+        self.symbol = tcfg.get("symbol", "BTCUSDT").upper()
+        self.interval = tcfg.get("interval", "1m")
+        self.initial_balance = float(tcfg.get("initial_balance", 1000.0))
+        self.balance = self.initial_balance
+        self.percent = float(tcfg.get("percent", 0.5))
+        self.leverage = int(tcfg.get("leverage", 10))
+        self.fee_rate = float(tcfg.get("fee_rate", 0.0005))
+        self.test_mode = bool(tcfg.get("test_mode", True))
+
+        self.ema_period = int(icfg.get("ema_period", 5))
+        self.ma_period = int(icfg.get("ma_period", 15))
+
+        # 状态
+        self.position = Position(side=None, entry_price=None, qty=None)
+        self.current_price: float | None = None
+        self.timestamps: list[int] = []  # close_time
+        self.closes: list[float] = []
+        self.ema_list: list[float] = []
+        self.ma_list: list[float] = []
+        self.latest_kline: dict | None = None  # 未收盘的实时K线（完整O/H/L/C/Vol）
+        # 计算选项：是否仅使用已收盘K线参与均线计算（更贴近多数交易所图表）
+        icfg = config.get("indicators", {})
+        self.use_closed_only: bool = bool(icfg.get("use_closed_only", True))
+
+        # DB
+        self.db_path = os.path.join("db", "trading.db")
+        os.makedirs("db", exist_ok=True)
+        self._db = sqlite3.connect(self.db_path, check_same_thread=False)
+        self._db.row_factory = sqlite3.Row
+        self._init_db()
+
+    # --------------------- DB ---------------------
+    def _init_db(self):
+        cur = self._db.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS klines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT,
+                interval TEXT,
+                open_time INTEGER,
+                close_time INTEGER,
+                open REAL, high REAL, low REAL, close REAL,
+                volume REAL
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                time INTEGER,
+                symbol TEXT,
+                side TEXT,
+                price REAL,
+                qty REAL,
+                fee REAL,
+                pnl REAL,
+                balance_after REAL
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS wallet (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                time INTEGER,
+                balance REAL
+            )
+            """
+        )
+        self._db.commit()
+
+    def _insert_kline(self, k: dict):
+        cur = self._db.cursor()
+        cur.execute(
+            """
+            INSERT INTO klines(symbol, interval, open_time, close_time, open, high, low, close, volume)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                self.symbol,
+                self.interval,
+                int(k["open_time"]),
+                int(k["close_time"]),
+                float(k["open"]),
+                float(k["high"]),
+                float(k["low"]),
+                float(k["close"]),
+                float(k.get("volume", 0.0)),
+            ),
+        )
+        self._db.commit()
+
+    def _insert_trade(self, side: str, price: float, qty: float, fee: float, pnl: float):
+        cur = self._db.cursor()
+        cur.execute(
+            """
+            INSERT INTO trades(time, symbol, side, price, qty, fee, pnl, balance_after)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (int(time.time() * 1000), self.symbol, side, price, qty, fee, pnl, self.balance),
+        )
+        self._db.commit()
+
+    def _insert_wallet(self):
+        cur = self._db.cursor()
+        cur.execute(
+            "INSERT INTO wallet(time, balance) VALUES (?, ?)",
+            (int(time.time() * 1000), self.balance),
+        )
+        self._db.commit()
+
+    # --------------------- Data & Indicators ---------------------
+    def _recalc_indicators(self):
+        self.ema_list = ema(self.closes, self.ema_period)
+        self.ma_list = sma(self.closes, self.ma_period)
+
+    def ingest_historical(self, klines: list[dict]):
+        for k in klines:
+            self._insert_kline(k)
+            self.timestamps.append(k["close_time"])
+            self.closes.append(float(k["close"]))
+        self._recalc_indicators()
+
+    def on_realtime_kline(self, k: dict):
+        # 未收盘也参与计算（更贴近实时策略）；收盘时落库
+        price = float(k["close"])
+        self.current_price = price
+        close_time = int(k["close_time"])
+
+        # 指标计算的数据推进策略
+        if self.use_closed_only:
+            # 仅在收盘事件时推进与更新，未收盘不影响均线计算
+            if bool(k.get("is_final", False)):
+                # 新K线或当前K线收盘
+                if not self.timestamps or close_time != self.timestamps[-1]:
+                    self.timestamps.append(close_time)
+                    self.closes.append(price)
+                else:
+                    self.closes[-1] = price
+                self._recalc_indicators()
+        else:
+            # 未收盘也进入计算：更灵敏，但与交易所图略有差异
+            if not self.timestamps or close_time != self.timestamps[-1]:
+                self.timestamps.append(close_time)
+                self.closes.append(price)
+            else:
+                self.closes[-1] = price
+            self._recalc_indicators()
+
+
+        # 保存未收盘完整K线用于前端展示
+        try:
+            self.latest_kline = {
+                "open_time": int(k.get("open_time", close_time)),
+                "close_time": close_time,
+                "open": float(k.get("open", price)),
+                "high": float(k.get("high", price)),
+                "low": float(k.get("low", price)),
+                "close": float(k.get("close", price)),
+                "volume": float(k.get("volume", 0.0)),
+                "is_final": bool(k.get("is_final", False)),
+            }
+        except Exception:
+            pass
+
+        # 仅在最近两个点有效时评估信号
+        cross = crossover(self.ema_list, self.ma_list)
+
+        # 额外条件：价格相对均线、均线趋势
+        ema_rising = is_rising(self.ema_list, lookback=3)
+        ema_curr = self.ema_list[-1]
+        ma_curr = self.ma_list[-1]
+        if ema_curr is None or ma_curr is None:
+            return
+
+        # 轻量日志，便于观察实时更新
+        try:
+            print(f"[TICK] price={price:.2f} ema={ema_curr:.2f} ma={ma_curr:.2f} cross(g={cross.golden_cross}, d={cross.death_cross})")
+        except Exception:
+            pass
+
+        if self.position.side is None:
+            # 开仓逻辑（记录每个条件，便于对比 Binance 图表）
+            cond_long = cross.golden_cross and price > ema_curr and ema_curr > ma_curr and ema_rising
+            cond_short = cross.death_cross and price < ema_curr and ema_curr < ma_curr and not ema_rising
+            if cond_long:
+                print(f"[OPEN-CHECK] LONG ok: price>{ema_curr:.2f} ema>{ma_curr:.2f} rising={ema_rising}")
+                self._open_position("LONG", price)
+            elif cross.golden_cross:
+                print(f"[OPEN-CHECK] LONG miss: price>{ema_curr:.2f}={price>ema_curr} ema>{ma_curr:.2f}={ema_curr>ma_curr} rising={ema_rising}")
+            if cond_short:
+                print(f"[OPEN-CHECK] SHORT ok: price<{ema_curr:.2f} ema<{ma_curr:.2f} rising={ema_rising}")
+                self._open_position("SHORT", price)
+            elif cross.death_cross:
+                print(f"[OPEN-CHECK] SHORT miss: price<{ema_curr:.2f}={price<ema_curr} ema<{ma_curr:.2f}={ema_curr<ma_curr} rising={ema_rising}")
+        else:
+            # 平仓逻辑
+            if self.position.side == "LONG":
+                if cross.death_cross or price < ema_curr:
+                    self._close_position(price)
+            elif self.position.side == "SHORT":
+                if cross.golden_cross or price > ema_curr:
+                    self._close_position(price)
+
+        # 收盘时落库
+        if bool(k.get("is_final", False)):
+            self._insert_kline(k)
+
+    # --------------------- Trading Logic ---------------------
+    def _notional_and_qty(self, price: float) -> tuple[float, float]:
+        # 每次开仓金额 = 当前余额 * percent
+        base_amount = self.balance * self.percent
+        notional = base_amount * self.leverage
+        qty = notional / price
+        return notional, qty
+
+    def _open_position(self, side: str, price: float):
+        notional, qty = self._notional_and_qty(price)
+        fee = notional * self.fee_rate
+        self.balance -= fee
+        self._insert_trade(side, price, qty, fee, pnl=0.0)
+        self._insert_wallet()
+        self.position = Position(side=side, entry_price=price, qty=qty)
+        print(f"[OPEN] {side} price={price:.2f} qty={qty:.6f} fee={fee:.4f} bal={self.balance:.2f}")
+
+    def _close_position(self, price: float):
+        if self.position.side is None or self.position.entry_price is None or self.position.qty is None:
+            return
+        side = self.position.side
+        entry = float(self.position.entry_price)
+        qty = float(self.position.qty)
+
+        pnl = 0.0
+        if side == "LONG":
+            pnl = (price - entry) * qty
+        elif side == "SHORT":
+            pnl = (entry - price) * qty
+
+        notional = price * qty
+        fee = notional * self.fee_rate
+        self.balance += pnl
+        self.balance -= fee
+        self._insert_trade("CLOSE", price, qty, fee, pnl)
+        self._insert_wallet()
+        print(f"[CLOSE] {side} @ {price:.2f} pnl={pnl:.4f} fee={fee:.4f} bal={self.balance:.2f}")
+        self.position = Position(side=None, entry_price=None, qty=None)
+
+    # --------------------- Status ---------------------
+    def status(self) -> dict:
+        pos_val = 0.0
+        if self.position.side and self.current_price and self.position.qty:
+            if self.position.side == "LONG":
+                pos_val = self.position.qty * self.current_price
+            else:
+                pos_val = self.position.qty * self.current_price
+        latest_kline = self.latest_kline
+        return {
+            "symbol": self.symbol,
+            "interval": self.interval,
+            "balance": round(self.balance, 4),
+            "initial_balance": self.initial_balance,
+            "leverage": self.leverage,
+            "fee_rate": self.fee_rate,
+            "percent": self.percent,
+            "current_price": self.current_price,
+            "ema": self.ema_list[-1] if self.ema_list else None,
+            "ma": self.ma_list[-1] if self.ma_list else None,
+            "position": {
+                "side": self.position.side,
+                "entry_price": self.position.entry_price,
+                "qty": self.position.qty,
+                "value": pos_val,
+            },
+            "latest_kline": latest_kline,
+        }
+
+    def recent_trades(self, limit: int = 5) -> list[dict]:
+        cur = self._db.cursor()
+        cur.execute("SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,))
+        rows = cur.fetchall()
+        return [dict(r) for r in rows]
+
+    def recent_klines(self, limit: int = 5) -> list[dict]:
+        cur = self._db.cursor()
+        cur.execute("SELECT * FROM klines ORDER BY id DESC LIMIT ?", (limit,))
+        rows = cur.fetchall()
+        return [dict(r) for r in rows]

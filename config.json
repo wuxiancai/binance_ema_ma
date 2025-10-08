@@ -1,0 +1,23 @@
+{
+  "trading": {
+    "api_key": "",
+    "secret_key": "",
+    "test_mode": true,
+    "initial_balance": 1000.0,
+    "percent": 0.5,
+    "leverage": 10,
+    "fee_rate": 0.0005,
+    "symbol": "BTCUSDT",
+    "interval": "1m",
+    "data_period_days": 1,
+    "base_url": "https://fapi.binance.com"
+  },
+  "indicators": {
+    "ema_period": 5,
+    "ma_period": 15
+  },
+  "web": {
+    "port": 5001,
+    "timezone_offset_hours": 8
+  }
+}
