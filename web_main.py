@@ -11,6 +11,7 @@ import json
 import threading
 import time
 from pathlib import Path
+import re
 from typing import Any
 
 from flask import Flask, jsonify, Response
@@ -23,9 +24,22 @@ from trading import TradingEngine
 
 
 def load_config() -> dict:
-    cfg_path = Path("config.json")
-    with cfg_path.open("r", encoding="utf-8") as f:
-        return json.load(f)
+    """加载配置，默认读取 config.jsonc，并兼容注释。
+
+    支持的注释形式：
+    - 单行注释：以 // 或 # 开头（行内或整行）
+    - 块注释：/* ... */
+    注意：不支持 JSONC 的“尾逗号”，请勿在最后一项后面加逗号。
+    """
+    # 优先使用 config.jsonc；若不存在则回退到 config.json
+    cfg_path = Path("config.jsonc") if Path("config.jsonc").exists() else Path("config.json")
+    txt = cfg_path.read_text(encoding="utf-8")
+    # 去除块注释
+    txt = re.sub(r"/\*[\s\S]*?\*/", "", txt)
+    # 去除以 // 或 # 开头的行内注释（避免误删 URL 中的 //）
+    txt = re.sub(r"(^|\s)//.*$", "", txt, flags=re.MULTILINE)
+    txt = re.sub(r"(^|\s)#.*$", "", txt, flags=re.MULTILINE)
+    return json.loads(txt)
 
 
 def get_sysinfo() -> dict:

@@ -8,6 +8,7 @@ __pycache__/
 *$py.class
 *.pyo
 node_modules/
+
 # Virtual env
 .venv/
 venv/

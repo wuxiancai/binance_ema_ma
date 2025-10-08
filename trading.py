@@ -52,9 +52,12 @@ class TradingEngine:
         self.ema_list: list[float] = []
         self.ma_list: list[float] = []
         self.latest_kline: dict | None = None  # 未收盘的实时K线（完整O/H/L/C/Vol）
-        # 计算选项：是否仅使用已收盘K线参与均线计算（更贴近多数交易所图表）
+        # 计算选项
         icfg = config.get("indicators", {})
+        # 是否仅使用已收盘K线参与均线计算（更贴近多数交易所图表）
         self.use_closed_only: bool = bool(icfg.get("use_closed_only", True))
+        # 是否将 EMA/MA 斜率（趋势）纳入开仓条件
+        self.use_slope: bool = bool(icfg.get("use_slope", True))
 
         # DB
         self.db_path = os.path.join("db", "trading.db")
@@ -217,18 +220,20 @@ class TradingEngine:
 
         if self.position.side is None:
             # 开仓逻辑（记录每个条件，便于对比 Binance 图表）
-            cond_long = cross.golden_cross and price > ema_curr and ema_curr > ma_curr and ema_rising
-            cond_short = cross.death_cross and price < ema_curr and ema_curr < ma_curr and not ema_rising
+            slope_ok_long = (ema_rising if self.use_slope else True)
+            slope_ok_short = ((not ema_rising) if self.use_slope else True)
+            cond_long = cross.golden_cross and price > ema_curr and ema_curr > ma_curr and slope_ok_long
+            cond_short = cross.death_cross and price < ema_curr and ema_curr < ma_curr and slope_ok_short
             if cond_long:
-                print(f"[OPEN-CHECK] LONG ok: price>{ema_curr:.2f} ema>{ma_curr:.2f} rising={ema_rising}")
+                print(f"[OPEN-CHECK] LONG ok: price>{ema_curr:.2f} ema>{ma_curr:.2f} rising={ema_rising} slope_on={self.use_slope}")
                 self._open_position("LONG", price)
             elif cross.golden_cross:
-                print(f"[OPEN-CHECK] LONG miss: price>{ema_curr:.2f}={price>ema_curr} ema>{ma_curr:.2f}={ema_curr>ma_curr} rising={ema_rising}")
+                print(f"[OPEN-CHECK] LONG miss: price>{ema_curr:.2f}={price>ema_curr} ema>{ma_curr:.2f}={ema_curr>ma_curr} rising={ema_rising} slope_on={self.use_slope}")
             if cond_short:
-                print(f"[OPEN-CHECK] SHORT ok: price<{ema_curr:.2f} ema<{ma_curr:.2f} rising={ema_rising}")
+                print(f"[OPEN-CHECK] SHORT ok: price<{ema_curr:.2f} ema<{ma_curr:.2f} rising={ema_rising} slope_on={self.use_slope}")
                 self._open_position("SHORT", price)
             elif cross.death_cross:
-                print(f"[OPEN-CHECK] SHORT miss: price<{ema_curr:.2f}={price<ema_curr} ema<{ma_curr:.2f}={ema_curr<ma_curr} rising={ema_rising}")
+                print(f"[OPEN-CHECK] SHORT miss: price<{ema_curr:.2f}={price<ema_curr} ema<{ma_curr:.2f}={ema_curr<ma_curr} rising={ema_rising} slope_on={self.use_slope}")
         else:
             # 平仓逻辑
             if self.position.side == "LONG":
