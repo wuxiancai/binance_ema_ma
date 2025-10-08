@@ -24,6 +24,7 @@ class Position:
     side: Optional[str]  # "LONG" | "SHORT" | None
     entry_price: float | None
     qty: float | None
+    open_fee: float | None
 
 
 class TradingEngine:
@@ -44,7 +45,7 @@ class TradingEngine:
         self.ma_period = int(icfg.get("ma_period", 15))
 
         # 状态
-        self.position = Position(side=None, entry_price=None, qty=None)
+        self.position = Position(side=None, entry_price=None, qty=None, open_fee=None)
         self.current_price: float | None = None
         self.timestamps: list[int] = []  # close_time
         self.closes: list[float] = []
@@ -253,9 +254,10 @@ class TradingEngine:
         notional, qty = self._notional_and_qty(price)
         fee = notional * self.fee_rate
         self.balance -= fee
-        self._insert_trade(side, price, qty, fee, pnl=0.0)
+        # 开仓盈亏应体现手续费（负数）
+        self._insert_trade(side, price, qty, fee, pnl=-fee)
         self._insert_wallet()
-        self.position = Position(side=side, entry_price=price, qty=qty)
+        self.position = Position(side=side, entry_price=price, qty=qty, open_fee=fee)
         print(f"[OPEN] {side} price={price:.2f} qty={qty:.6f} fee={fee:.4f} bal={self.balance:.2f}")
 
     def _close_position(self, price: float):
@@ -264,6 +266,7 @@ class TradingEngine:
         side = self.position.side
         entry = float(self.position.entry_price)
         qty = float(self.position.qty)
+        open_fee = float(self.position.open_fee or 0.0)
 
         pnl = 0.0
         if side == "LONG":
@@ -273,12 +276,15 @@ class TradingEngine:
 
         notional = price * qty
         fee = notional * self.fee_rate
+        # 账户余额只变动价格差与当次手续费；开仓手续费已在开仓时扣除
         self.balance += pnl
         self.balance -= fee
-        self._insert_trade("CLOSE", price, qty, fee, pnl)
+        # 记录净盈亏：价格差 - 平仓手续费 - 开仓手续费
+        net_pnl = pnl - fee - open_fee
+        self._insert_trade("CLOSE", price, qty, fee, net_pnl)
         self._insert_wallet()
-        print(f"[CLOSE] {side} @ {price:.2f} pnl={pnl:.4f} fee={fee:.4f} bal={self.balance:.2f}")
-        self.position = Position(side=None, entry_price=None, qty=None)
+        print(f"[CLOSE] {side} @ {price:.2f} gross_pnl={pnl:.4f} fee_close={fee:.4f} fee_open={open_fee:.4f} net_pnl={net_pnl:.4f} bal={self.balance:.2f}")
+        self.position = Position(side=None, entry_price=None, qty=None, open_fee=None)
 
     # --------------------- Status ---------------------
     def status(self) -> dict:

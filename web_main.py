@@ -176,27 +176,27 @@ def create_app(engine: TradingEngine, port: int, tz_offset: int, events_q: queue
           <div id="meta"></div>
           <div class="grid">
             <div class="card">
-              <h2>实时状态</h2>
+              <h2>实时价格及 EMA/MA</h2>
               <div id="status"></div>
             </div>
             <div class="card">
-              <h2>当前仓位</h2>
+              <h2>当前持仓</h2>
               <div id="position"></div>
             </div>
             <div class="card">
               <h2>最近交易</h2>
-              <table id="trades"><thead><tr><th>时间</th><th>方向</th><th>价格</th><th>数量</th><th>手续费</th><th>盈亏</th></tr></thead><tbody></tbody></table>
+              <table id="trades"><thead><tr><th>时间</th><th>方向</th><th>价格</th><th>数量</th><th>手续费</th><th>盈亏</th><th>利润率</th></tr></thead><tbody></tbody></table>
             </div>
             <div class="card">
-              <h2>最新K线 (5条)</h2>
+              <h2>实时 K 线</h2>
               <table id="klines"><thead><tr><th>收盘时间</th><th>开</th><th>高</th><th>低</th><th>收</th><th>量</th></tr></thead><tbody></tbody></table>
             </div>
           </div>
           <script>
           function render(s) {
-            const price = s.current_price ? s.current_price.toFixed(2) : '-';
-            const ema = s.ema ? s.ema.toFixed(2) : '-';
-            const ma = s.ma ? s.ma.toFixed(2) : '-';
+            const price = s.current_price ? s.current_price.toFixed(1) : '-';
+            const ema = s.ema ? s.ema.toFixed(1) : '-';
+            const ma = s.ma ? s.ma.toFixed(1) : '-';
             const bal = s.balance?.toFixed(2);
             document.getElementById('meta').innerHTML = `
               <p>服务器时间: <code>${new Date(s.server_time).toLocaleString()}</code></p>
@@ -207,8 +207,8 @@ def create_app(engine: TradingEngine, port: int, tz_offset: int, events_q: queue
             `;
             const pos = s.position || {};
             const side = pos.side || '-';
-            const entry = pos.entry_price ? pos.entry_price.toFixed(2) : '-';
-            const qty = pos.qty ? pos.qty.toFixed(6) : '-';
+            const entry = pos.entry_price ? pos.entry_price.toFixed(1) : '-';
+            const qty = pos.qty ? pos.qty.toFixed(4) : '-';
             const val = pos.value ? pos.value.toFixed(2) : '-';
             document.getElementById('position').innerHTML = `
               <p>方向: <b>${side}</b> · 开仓价: ${entry} · 数量: ${qty} · 当前价值: ${val}</p>
@@ -216,22 +216,37 @@ def create_app(engine: TradingEngine, port: int, tz_offset: int, events_q: queue
             const tb = document.querySelector('#trades tbody');
             tb.innerHTML = '';
             (s.recent_trades||[]).forEach(t => {
-              const d = new Date(t.time).toLocaleString();
-              const pnl = t.pnl === null ? '-' : Number(t.pnl).toFixed(4);
-              tb.innerHTML += `<tr><td>${d}</td><td>${t.side}</td><td>${Number(t.price).toFixed(2)}</td><td>${Number(t.qty).toFixed(6)}</td><td>${Number(t.fee).toFixed(6)}</td><td>${pnl}</td></tr>`;
+              // 仅显示时间（时:分:秒），不显示日期
+              const d = new Date(t.time).toLocaleTimeString();
+              const price = Number(t.price);
+              const qty = Number(t.qty);
+              const fee = Number(t.fee);
+              const pnlNum = Number(t.pnl);
+              const notional = (isFinite(price) && isFinite(qty)) ? price * qty : NaN;
+              const rate = (isFinite(pnlNum) && isFinite(notional) && notional > 0)
+                ? ((pnlNum / notional) * 100).toFixed(2)
+                : '-';
+              const pnl = (t.pnl === null || Number.isNaN(pnlNum)) ? '-' : pnlNum.toFixed(2);
+              tb.innerHTML += `<tr>
+                <td>${d}</td>
+                <td>${t.side}</td>
+                <td>${isFinite(price) ? price.toFixed(1) : '-'}</td>
+                <td>${isFinite(qty) ? qty.toFixed(4) : '-'}</td>
+                <td>${isFinite(fee) ? fee.toFixed(2) : '-'}</td>
+                <td>${pnl}</td>
+                <td>${rate === '-' ? '-' : rate + '%'}</td>
+              </tr>`;
             });
             const kb = document.querySelector('#klines tbody');
             kb.innerHTML = '';
-            // 先渲染未收盘的实时K线作为第一行（完整 O/H/L/C/Vol）
+            // 仅显示最新未收盘K线的首行，后续历史行不展示
             if (s.latest_kline) {
               const k = s.latest_kline;
-              const d = new Date(k.close_time).toLocaleString();
-              kb.innerHTML += `<tr style="font-weight:600"><td>${d}</td><td>${Number(k.open).toFixed(2)}</td><td>${Number(k.high).toFixed(2)}</td><td>${Number(k.low).toFixed(2)}</td><td>${Number(k.close).toFixed(2)}</td><td>${Number(k.volume||0).toFixed(6)}</td></tr>`;
+              // 仅显示时间（时:分:秒），不显示日期
+              const d = new Date(k.close_time).toLocaleTimeString();
+              kb.innerHTML += `<tr style="font-weight:600"><td>${d}</td><td>${Number(k.open).toFixed(1)}</td><td>${Number(k.high).toFixed(1)}</td><td>${Number(k.low).toFixed(1)}</td><td>${Number(k.close).toFixed(1)}</td><td>${Number(k.volume||0).toFixed(2)}</td></tr>`;
             }
-            (s.recent_klines||[]).forEach(k => {
-              const d = new Date(k.close_time).toLocaleString();
-              kb.innerHTML += `<tr><td>${d}</td><td>${k.open.toFixed(2)}</td><td>${k.high.toFixed(2)}</td><td>${k.low.toFixed(2)}</td><td>${k.close.toFixed(2)}</td><td>${(k.volume||0).toFixed(6)}</td></tr>`;
-            });
+            // 不再渲染 (s.recent_klines) 的其它历史行
           }
           // 首屏初始化一次
           (async () => { const r = await fetch('/status'); const s = await r.json(); render(s); })();
