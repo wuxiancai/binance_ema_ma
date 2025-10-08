@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from flask import Flask, jsonify, Response
+import psutil
 import queue
 
 from binance_client import BinanceClient
@@ -26,6 +27,24 @@ def load_config() -> dict:
     with cfg_path.open("r", encoding="utf-8") as f:
         return json.load(f)
 
+
+def get_sysinfo() -> dict:
+    """采集系统信息（CPU/MEM/DISK），含剩余容量（字节）。"""
+    try:
+        cpu = psutil.cpu_percent(interval=0.1)
+        vm = psutil.virtual_memory()
+        du = psutil.disk_usage('/')
+        return {
+            "cpu_percent": cpu,
+            "mem_percent": vm.percent,
+            "mem_available_bytes": int(getattr(vm, "available", 0)),
+            "mem_total_bytes": int(getattr(vm, "total", 0)),
+            "disk_percent": du.percent,
+            "disk_free_bytes": int(getattr(du, "free", 0)),
+            "disk_total_bytes": int(getattr(du, "total", 0)),
+        }
+    except Exception:
+        return {}
 
 def start_ws(
     engine: TradingEngine,
@@ -65,6 +84,8 @@ def start_ws(
                 s["recent_trades"] = engine.recent_trades(5)
                 s["recent_klines"] = engine.recent_klines(5)
                 s["server_time"] = int(time.time() * 1000)
+                # 附带系统信息（CPU/MEM/DISK）
+                s["sysinfo"] = get_sysinfo()
                 events_q.put_nowait(s)
             except Exception:
                 pass
@@ -126,6 +147,7 @@ def start_price_poller(engine: TradingEngine, client: BinanceClient, events_q: q
                         s["recent_trades"] = engine.recent_trades(5)
                         s["recent_klines"] = engine.recent_klines(5)
                         s["server_time"] = int(time.time() * 1000)
+                        s["sysinfo"] = get_sysinfo()
                         events_q.put_nowait(s)
                     except Exception:
                         pass
@@ -147,6 +169,7 @@ def create_app(engine: TradingEngine, port: int, tz_offset: int, events_q: queue
         s["recent_trades"] = engine.recent_trades(5)
         s["recent_klines"] = engine.recent_klines(5)
         s["server_time"] = int(time.time() * 1000) + tz_offset * 3600 * 1000
+        s["sysinfo"] = get_sysinfo()
         return jsonify(s)
 
     @app.route("/")
@@ -193,13 +216,27 @@ def create_app(engine: TradingEngine, port: int, tz_offset: int, events_q: queue
             </div>
           </div>
           <script>
+          function fmtPct(x){ return (x===undefined||x===null||isNaN(Number(x))) ? '-' : (Number(x).toFixed(1) + '%'); }
+          function fmtBytes(b){
+            const n = Number(b);
+            if (!isFinite(n) || n <= 0) return '-';
+            const KB = 1024, MB = KB*1024, GB = MB*1024, TB = GB*1024;
+            if (n >= TB) return (n/TB).toFixed(1) + 'T';
+            if (n >= GB) return (n/GB).toFixed(1) + 'G';
+            if (n >= MB) return (n/MB).toFixed(0) + 'M';
+            if (n >= KB) return (n/KB).toFixed(0) + 'K';
+            return n.toFixed(0) + 'B';
+          }
           function render(s) {
             const price = s.current_price ? s.current_price.toFixed(1) : '-';
             const ema = s.ema ? s.ema.toFixed(1) : '-';
             const ma = s.ma ? s.ma.toFixed(1) : '-';
             const bal = s.balance?.toFixed(2);
+            const sys = s.sysinfo || {};
+            const memLeft = fmtBytes(sys.mem_available_bytes);
+            const diskLeft = fmtBytes(sys.disk_free_bytes);
             document.getElementById('meta').innerHTML = `
-              <p>服务器时间: <code>${new Date(s.server_time).toLocaleString()}</code></p>
+              <p>服务器时间: <code>${new Date(s.server_time).toLocaleString()}</code> · 系统: CPU <code>${fmtPct(sys.cpu_percent)}</code> · MEM <code>${fmtPct(sys.mem_percent)}</code> 剩余:<code>${memLeft}</code> · DISK <code>${fmtPct(sys.disk_percent)}</code> 剩余:<code>${diskLeft}</code></p>
             `;
             document.getElementById('status').innerHTML = `
               <p>价格: <b>${price}</b> · EMA(5): <b>${ema}</b> · MA(15): <b>${ma}</b></p>
