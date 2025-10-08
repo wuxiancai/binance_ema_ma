@@ -355,6 +355,9 @@ class TradingEngine:
             "current_price": self.current_price,
             "ema": self.ema_list[-1] if self.ema_list else None,
             "ma": self.ma_list[-1] if self.ma_list else None,
+            # 动态提供均线周期，供前端展示（避免硬编码 5/15）
+            "ema_period": self.ema_period,
+            "ma_period": self.ma_period,
             "position": {
                 "side": self.position.side,
                 "entry_price": self.position.entry_price,
