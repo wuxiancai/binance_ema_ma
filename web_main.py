@@ -78,6 +78,14 @@ def get_config_summary(engine: TradingEngine, tz_offset_hours: int, enable_polle
                 "ma_period": engine.ma_period,
                 "use_closed_only": engine.use_closed_only,
                 "use_slope": engine.use_slope,
+                "close_price_lookback": engine.close_price_lookback,
+                "slope": {
+                    "mode": getattr(engine, "slope_mode", "mean_diff"),
+                    "lookback": getattr(engine, "slope_lookback", 3),
+                    "normalize_by_ema": getattr(engine, "slope_normalize_by_ema", True),
+                    "min_slope": getattr(engine, "slope_min", 0.0),
+                    "strict_monotonic": getattr(engine, "slope_strict_monotonic", False),
+                },
             },
             "web": {
                 "timezone_offset_hours": tz_offset_hours,
@@ -300,11 +308,14 @@ def create_app(engine: TradingEngine, port: int, tz_offset: int, events_q: queue
               const i = cfg.indicators || {};
               const w = cfg.web || {};
               const fmtBool = (b) => (b ? '开' : '关');
+              const sl = i.slope || {};
               document.getElementById('cfg').innerHTML = `
                 <p>
                   交易类型: <code>${t.test_mode?'模拟':'真实'}</code> · 保证金余额:<code>${t.initial_balance}</code> · 开仓比例:<code>${(Number(t.percent)*100).toFixed(0)}%</code> · 杠杆:<code>${t.leverage}x</code> · 手续费率:<code>${(Number(t.fee_rate)*100).toFixed(3)}%</code> · 交易币对:<code>${t.symbol}</code> · ｜ K线周期:<code>${t.interval}</code>
-                  指标: EMA<code>${i.ema_period}</code> · MA<code>${i.ma_period}</code> · K线收盘后交易:<code>${fmtBool(i.use_closed_only)}</code> · EMA/MA斜率约束:<code>${fmtBool(i.use_slope)}</code> · 价格轮询:<code>${fmtBool(w.enable_price_poller)}</code>
-                  当前显示时区:UTC +<code>${w.timezone_offset_hours||0}</code>
+                  指标: EMA<code>${i.ema_period}</code> · MA<code>${i.ma_period}</code> · K线收盘后交易:<code>${fmtBool(i.use_closed_only)}</code> · 斜率约束:<code>${fmtBool(i.use_slope)}</code> · 价格轮询:<code>${fmtBool(w.enable_price_poller)}</code> · 时区:UTC +<code>${w.timezone_offset_hours||0}</code>
+                </p>
+                <p>
+                  斜率参数：模式=<code>${sl.mode}</code> · N=<code>${sl.lookback}</code> · 归一化=<code>${fmtBool(sl.normalize_by_ema)}</code> · 强度门槛=<code>${sl.min_slope}</code> · 严格单调=<code>${fmtBool(sl.strict_monotonic)}</code> · 平仓价格确认N=<code>${i.close_price_lookback}</code>
                 </p>
               `;
             }

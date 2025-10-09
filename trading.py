@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from indicators import ema, sma, crossover, is_rising
+from indicators import ema, sma, crossover, is_rising, slope_ok
 
 
 @dataclass
@@ -58,6 +58,15 @@ class TradingEngine:
         self.use_closed_only: bool = bool(icfg.get("use_closed_only", True))
         # 是否将 EMA/MA 斜率（趋势）纳入开仓条件
         self.use_slope: bool = bool(icfg.get("use_slope", True))
+        # 斜率参数（统一从 config.indicators.slope 读取）
+        slope_cfg = icfg.get("slope", {})
+        self.slope_lookback: int = int(slope_cfg.get("lookback", icfg.get("slope_lookback", 3)))
+        self.slope_mode: str = str(slope_cfg.get("mode", "mean_diff"))
+        self.slope_min: float = float(slope_cfg.get("min_slope", 0.0))
+        self.slope_normalize_by_ema: bool = bool(slope_cfg.get("normalize_by_ema", True))
+        self.slope_strict_monotonic: bool = bool(slope_cfg.get("strict_monotonic", False))
+        # 平仓价格连续判定的回看根数（例如 2 或 3）
+        self.close_price_lookback: int = int(icfg.get("close_price_lookback", 2))
 
         # DB
         self.db_path = os.path.join("db", "trading.db")
@@ -265,7 +274,15 @@ class TradingEngine:
         cross = crossover(self.ema_list, self.ma_list)
 
         # 额外条件：价格相对均线、均线趋势
-        ema_rising = is_rising(self.ema_list, lookback=3)
+        ema_rising = is_rising(self.ema_list, lookback=self.slope_lookback)
+        slope_long_ok, slope_short_ok = slope_ok(
+            self.ema_list,
+            lookback=self.slope_lookback,
+            min_slope=self.slope_min,
+            mode=self.slope_mode,
+            normalize_by_ema=self.slope_normalize_by_ema,
+            strict_monotonic=self.slope_strict_monotonic,
+        )
         ema_curr = self.ema_list[-1]
         ma_curr = self.ma_list[-1]
         if ema_curr is None or ma_curr is None:
@@ -277,12 +294,14 @@ class TradingEngine:
         except Exception:
             pass
 
+        # 斜率/价格条件（用于首次开仓和反向开仓）
+        slope_ok_long = (slope_long_ok if self.use_slope else True)
+        slope_ok_short = (slope_short_ok if self.use_slope else True)
+        cond_long = cross.golden_cross and (price > ema_curr) and (ema_curr > ma_curr) and slope_ok_long
+        cond_short = cross.death_cross and (price < ema_curr) and (ema_curr < ma_curr) and slope_ok_short
+
         if self.position.side is None:
-            # 开仓逻辑（记录每个条件，便于对比 Binance 图表）
-            slope_ok_long = (ema_rising if self.use_slope else True)
-            slope_ok_short = ((not ema_rising) if self.use_slope else True)
-            cond_long = cross.golden_cross and price > ema_curr and ema_curr > ma_curr and slope_ok_long
-            cond_short = cross.death_cross and price < ema_curr and ema_curr < ma_curr and slope_ok_short
+            # 开仓必须是金叉/死叉，且满足价格与斜率约束
             if cond_long:
                 print(f"[OPEN-CHECK] LONG ok: price>{ema_curr:.2f} ema>{ma_curr:.2f} rising={ema_rising} slope_on={self.use_slope}")
                 self._open_position("LONG", price)
@@ -294,26 +313,33 @@ class TradingEngine:
             elif cross.death_cross:
                 print(f"[OPEN-CHECK] SHORT miss: price<{ema_curr:.2f}={price<ema_curr} ema<{ma_curr:.2f}={ema_curr<ma_curr} rising={ema_rising} slope_on={self.use_slope}")
         else:
-            # 平仓逻辑
-            # 变更说明：
-            # 1) 将平仓条件简化为仅依赖交叉信号：
-            #    - LONG 仓位：仅在出现“死叉”时平仓；不再因为价格 < EMA 提前平仓。
-            #    - SHORT 仓位：仅在出现“金叉”时平仓；不再因为价格 > EMA 提前平仓。
-            # 2) 支持“同一根 K 线事件中平仓后立即反向开仓”：
-            #    - 若死叉导致平多仓，则在同次事件立即开空仓；
-            #    - 若金叉导致平空仓，则在同次事件立即开多仓；
-            #    - 该反向开仓不再额外检查价格相对均线或斜率条件，严格按交叉信号执行。
-            #    - 说明：use_closed_only=true 时，交叉仅在收盘触发；false 时，未收盘也可能触发，频次更高。
+            # 平仓逻辑：
+            # - 在出现交叉信号时平仓；
+            # - 额外加入价格“连续突破/跌破”条件：
+            #   * 平空仓：当前收盘价 > EMA 且高于前 N 根收盘价（N=close_price_lookback）。
+            #   * 平多仓：当前收盘价 < EMA 且低于前 N 根收盘价。
+            # - 反向开仓：仅在交叉触发的平仓场景下进行，且同样要求价格与斜率条件（cond_long/cond_short）。
+
+            # 取前 N 根（不含当前）收盘价
+            prev_n = self.close_price_lookback
+            prev_closes = self.closes[-(prev_n + 1):-1] if len(self.closes) >= (prev_n + 1) else []
+            breakout_up = (price > ema_curr) and (len(prev_closes) == prev_n) and all(price > c for c in prev_closes)
+            breakout_down = (price < ema_curr) and (len(prev_closes) == prev_n) and all(price < c for c in prev_closes)
+
             if self.position.side == "LONG":
-                if cross.death_cross:
-                    # 死叉：平多，并在同事件反向开空
+                should_close_long = cross.death_cross or breakout_down
+                if should_close_long:
                     self._close_position(price)
-                    self._open_position("SHORT", price)
+                    # 仅在死叉导致的平仓场景下尝试反向开空；并套用价格/斜率约束
+                    if cross.death_cross and cond_short:
+                        self._open_position("SHORT", price)
             elif self.position.side == "SHORT":
-                if cross.golden_cross:
-                    # 金叉：平空，并在同事件反向开多
+                should_close_short = cross.golden_cross or breakout_up
+                if should_close_short:
                     self._close_position(price)
-                    self._open_position("LONG", price)
+                    # 仅在金叉导致的平仓场景下尝试反向开多；并套用价格/斜率约束
+                    if cross.golden_cross and cond_long:
+                        self._open_position("LONG", price)
 
         # 收盘时落库
         if bool(k.get("is_final", False)):

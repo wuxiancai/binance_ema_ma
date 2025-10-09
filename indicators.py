@@ -86,3 +86,65 @@ def is_rising(series: list[float], lookback: int = 3) -> bool:
     if len(vals) < lookback:
         return False
     return all(vals[i] <= vals[i + 1] for i in range(len(vals) - 1))
+
+
+def ema_slope(series: list[float], lookback: int, mode: str = "mean_diff", normalize_by_ema: bool = True) -> float | None:
+    """计算 EMA 的斜率强度。
+
+    参数：
+    - lookback: 回看根数（>=2）。
+    - mode: "mean_diff"（近 N 根差值均值）或 "linreg"（线性回归拟合斜率）。
+    - normalize_by_ema: 是否除以当前 EMA 做归一化，提升跨价格区间的可比性。
+
+    返回：
+    - 每根K线的单位斜率（若 normalize_by_ema=True，则为相对斜率）。
+    - 数据不足时返回 None。
+    """
+    if lookback is None or lookback < 2:
+        return None
+    vals = [v for v in series[-lookback:] if v is not None]
+    if len(vals) < lookback:
+        return None
+    curr = vals[-1]
+
+    if mode == "linreg":
+        # 线性回归拟合：x=0..N-1, y=EMA
+        n = len(vals)
+        xs = list(range(n))
+        mean_x = sum(xs) / n
+        mean_y = sum(vals) / n
+        var_x = sum((x - mean_x) ** 2 for x in xs)
+        if var_x == 0:
+            return None
+        cov_xy = sum((xs[i] - mean_x) * (vals[i] - mean_y) for i in range(n))
+        slope = cov_xy / var_x
+    else:
+        # 默认均值差分：更灵敏
+        diffs = [vals[i] - vals[i - 1] for i in range(1, len(vals))]
+        slope = sum(diffs) / len(diffs)
+
+    if normalize_by_ema and curr and curr != 0:
+        slope = slope / curr
+    return slope
+
+
+def slope_ok(series: list[float], lookback: int, min_slope: float, *, mode: str = "mean_diff", normalize_by_ema: bool = True, strict_monotonic: bool = False) -> tuple[bool, bool]:
+    """返回 (long_ok, short_ok) 斜率门槛是否满足。
+
+    - long_ok: slope >= min_slope 且（如 strict_monotonic）最近 N 根严格递增。
+    - short_ok: slope <= -min_slope 且（如 strict_monotonic）最近 N 根严格递减。
+    """
+    s = ema_slope(series, lookback=lookback, mode=mode, normalize_by_ema=normalize_by_ema)
+    if s is None:
+        return (False, False)
+    long_ok = s >= float(min_slope)
+    short_ok = s <= -float(min_slope)
+    if strict_monotonic:
+        vals = [v for v in series[-lookback:] if v is not None]
+        if len(vals) < lookback:
+            return (False, False)
+        inc_ok = all(vals[i] < vals[i + 1] for i in range(len(vals) - 1))
+        dec_ok = all(vals[i] > vals[i + 1] for i in range(len(vals) - 1))
+        long_ok = long_ok and inc_ok
+        short_ok = short_ok and dec_ok
+    return (long_ok, short_ok)

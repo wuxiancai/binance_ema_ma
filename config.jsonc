@@ -17,9 +17,32 @@
   // 指标参数（均线与信号判断）
   "indicators": {
     "ema_period": 5,            // EMA 周期长度
-    "ma_period": 30,            // MA 周期长度
+    "ma_period": 20,            // MA 周期长度（与你截图一致，建议 20）
     "use_closed_only": false,    // 指标计算仅使用已收盘K线：true更稳健；false更灵敏
-    "use_slope": true          // 是否将 EMA 斜率（上升/下降趋势）纳入开仓条件；false=关闭斜率约束
+    "use_slope": true,          // 是否将斜率门槛纳入“开仓与交叉后的反向开仓”。
+
+    // 斜率参数（针对 1m + EMA(5)/MA(20) 优化）
+    "slope": {
+      "mode": "linreg",          // 斜率计算方式：
+                                    // - "mean_diff": 最近 N 根的 EMA 差值的均值（更灵敏）
+                                    // - "linreg": 最近 N 根做线性回归的拟合斜率（更抗噪）
+      "lookback": 4,              // 斜率回看根数 N；N 越大越稳健但更滞后。建议 4~5。
+      "normalize_by_ema": true,   // 是否对斜率做归一化：斜率/当前 EMA；true 更稳定，跨价格区间可比。
+      "min_slope": 0.00008,       // 斜率强度门槛（每根K线的单位斜率）。
+                                    // 开多要求 slope >= min_slope；开空要求 slope <= -min_slope。
+      "strict_monotonic": false   // 是否同时要求最近 N 根 EMA 严格递增/递减：
+                                    // true：作为趋势确认更稳健；false：仅用数值斜率判断，更灵敏。
+                                    
+                                    //调参建议
+                                    // - 想更激进：降低 min_slope 到 0.00005 或改 mode=mean_diff ；留意回撤增大与交易频次提升。
+                                    // - 想更稳健：提高 lookback 至 5、打开 strict_monotonic=true 、或设置 use_closed_only=true 仅收盘推进。
+                                    // - 不同周期：在 5m 或更长周期时可相应提高 min_slope （因每根变化幅度增大）。
+    },
+
+    // 平仓价格确认参数
+    "close_price_lookback": 2     // 平仓价格连续判定的回看根数（如 2 或 3）：
+                                    // - 平空仓：当前收盘价 > EMA 且高于前 N 根收盘价
+                                    // - 平多仓：当前收盘价 < EMA 且低于前 N 根收盘价
   },
 
   // Web 服务配置
