@@ -17,9 +17,9 @@
   // 指标参数（均线与信号判断）
   "indicators": {
     "ema_period": 5,            // EMA 周期长度
-    "ma_period": 20,            // MA 周期长度
-    "use_closed_only": true,    // 指标计算仅使用已收盘K线：true更稳健；false更灵敏
-    "use_slope": false          // 是否将 EMA 斜率（上升/下降趋势）纳入开仓条件；false=关闭斜率约束
+    "ma_period": 30,            // MA 周期长度
+    "use_closed_only": false,    // 指标计算仅使用已收盘K线：true更稳健；false更灵敏
+    "use_slope": true          // 是否将 EMA 斜率（上升/下降趋势）纳入开仓条件；false=关闭斜率约束
   },
 
   // Web 服务配置
