@@ -18,7 +18,7 @@
   "indicators": {
     "ema_period": 15,            // EMA 周期长度
     "ma_period": 60,            // MA 周期长度（与你截图一致，建议 20）
-    "use_closed_only": false,    // 指标计算仅使用已收盘K线：true更稳健；false更灵敏
+    "use_closed_only": true,    // 指标计算仅使用已收盘K线：true更稳健；false更灵敏
     "use_slope": false,          // 是否将斜率门槛纳入“开仓与交叉后的反向开仓”。
     "slope_use_preset": true,   // 斜率预设开关：true 时自动从 slope.py 按当前周期与 MA 周期加载推荐参数
                                    // 使用方法：只需将此参数改为 true，程序会读取 trading.interval 与 indicators.ma_period
