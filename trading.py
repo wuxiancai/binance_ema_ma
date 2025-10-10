@@ -17,6 +17,10 @@ from dataclasses import dataclass
 from typing import Optional
 
 from indicators import ema, sma, crossover, is_rising, slope_ok
+try:
+    from slope import get_preset  # 用于按周期与MA周期自动加载斜率推荐参数
+except Exception:
+    get_preset = None
 
 
 @dataclass
@@ -58,8 +62,20 @@ class TradingEngine:
         self.use_closed_only: bool = bool(icfg.get("use_closed_only", True))
         # 是否将 EMA/MA 斜率（趋势）纳入开仓条件
         self.use_slope: bool = bool(icfg.get("use_slope", True))
-        # 斜率参数（统一从 config.indicators.slope 读取）
-        slope_cfg = icfg.get("slope", {})
+        # 斜率参数加载策略：
+        # - 当配置开启 slope_use_preset=true 时，自动从 slope.py 读取预设（按 trading.interval 与 indicators.ma_period）。
+        # - 否则，按 config.indicators.slope 读取人工配置。
+        use_preset = bool(icfg.get("slope_use_preset", False))
+        slope_cfg = {}
+        if use_preset and get_preset is not None:
+            try:
+                slope_cfg = get_preset(self.interval, self.ma_period)
+                # 轻量提示：若需要实时观察，可在前端状态区显示该预设（后续可加）。
+            except Exception:
+                # 预设读取失败则回退至人工配置
+                slope_cfg = icfg.get("slope", {})
+        else:
+            slope_cfg = icfg.get("slope", {})
         self.slope_lookback: int = int(slope_cfg.get("lookback", icfg.get("slope_lookback", 3)))
         self.slope_mode: str = str(slope_cfg.get("mode", "mean_diff"))
         self.slope_min: float = float(slope_cfg.get("min_slope", 0.0))
